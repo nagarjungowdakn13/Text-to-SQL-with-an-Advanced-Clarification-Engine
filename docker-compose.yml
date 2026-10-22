@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  # 1. PostgreSQL Database
+  # Houses both application metadata and sample query database execution schemas
+  postgres:
+    image: postgres:15-alpine
+    container_name: querypilot_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: querypilot_app
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 2. Redis Cache
+  # Handles session caching and API gate rate limiting
+  redis:
+    image: redis:7-alpine
+    container_name: querypilot_cache
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 3. FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: querypilot_backend
+    restart: always
+    environment:
+      - ENV=production
+      - DEBUG=false
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/querypilot_app
+      - EXECUTION_DB_ADMIN_URL=postgresql://postgres:postgres@postgres:5432/querypilot_execution
+      - EXECUTION_DB_READONLY_URL=postgresql://querypilot_ro:readonlypassword@postgres:5432/querypilot_execution
+      - REDIS_URL=redis://redis:6379/0
+      # Propagate host environment LLM API keys
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - DEFAULT_LLM_PROVIDER=${DEFAULT_LLM_PROVIDER:-mock}
+      - DEFAULT_LLM_MODEL=${DEFAULT_LLM_MODEL:-mock-model}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - backend_logs:/app/logs
+      - shared_reports:/app/reports
+
+  # 4. Next.js Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: querypilot_frontend
+    restart: always
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
+  backend_logs:
+  shared_reports:
